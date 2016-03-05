@@ -11,12 +11,19 @@ class Failure(Exception): pass
 
 
 GROUP_EXPANSIONS_CACHE = {}
+MEMBER_EXPANSIONS_CACHE = {}
 
 
 def clear_group_cache():
     # TODO: clear only the relevant cache keys
     global GROUP_EXPANSIONS_CACHE
     GROUP_EXPANSIONS_CACHE = {}
+
+
+def clear_member_cache():
+    # TODO: clear only the relevant cache keys
+    global MEMBER_EXPANSIONS_CACHE
+    MEMBER_EXPANSIONS_CACHE = {}
 
 
 def create_group(name):
@@ -42,6 +49,7 @@ def drop_group(name):
         (group_members.c.child == name),
     )
     clear_group_cache()
+    clear_member_cache()
     with transaction() as t:
         t.execute(delete_group)
         t.execute(delete_members)
@@ -63,6 +71,7 @@ def add_subgroup(group, member):
         raise Failure("No group named '{}' exists.".format(group))
     query = group_members.insert().values(parent=group, child=member)
     clear_group_cache()
+    clear_member_cache()
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -77,6 +86,7 @@ def drop_subgroup(group, member):
         (group_members.c.child == member),
     )
     clear_group_cache()
+    clear_member_cache()
     query.execute()
 
 
@@ -110,6 +120,7 @@ def add_member_account(group, account):
     member = "account:{}".format(account)
     query = group_members.insert().values(parent=group, child=member)
     clear_group_cache()
+    clear_member_cache()
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -125,6 +136,7 @@ def drop_member_account(group, account):
         (group_members.c.child == member),
     )
     clear_group_cache()
+    clear_member_cache()
     query.execute()
 
 
@@ -157,3 +169,27 @@ def is_member_account(group, account):
     This function checks both direct and indirect memberships.
     """
     return account in list_accounts(group)
+
+
+def list_parents(member):
+    """List all of the groups that something is a member of, directly or indirectly."""
+    parents = MEMBER_EXPANSIONS_CACHE.get(member)
+    if parents is not None:
+        return parents
+    parents = set()
+    query = group_members.select().where(
+        group_members.c.child == member,
+    )
+    for result in query.execute():
+        parent = result.parent
+        parents.add(parent)
+        parents |= list_parents(parent)
+    parents = frozenset(parents)
+    MEMBER_EXPANSIONS_CACHE[member] = parents
+    return parents
+
+
+def list_account_memberships(account):
+    """List all groups that an account is a member of, directly or indirectly."""
+    member = "account:{}".format(account)
+    return list_parents(member)

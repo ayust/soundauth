@@ -68,3 +68,19 @@ class TestComplexGroup(unittest.TestCase):
         group.drop_group("bar")
         self.assertFalse(group.is_member("foo", "bar"))
         self.assertEqual(group.list_members("bar"), set())
+
+    def test_list_parents(self):
+        self.assertEqual(
+            group.list_parents("account:2"),
+            set(["foo", "bar"]),
+        )
+
+    def test_list_account_memberships(self):
+        self.assertEqual(
+            group.list_account_memberships(1),
+            set(["foo"]),
+        )
+        self.assertEqual(
+            group.list_account_memberships(2),
+            set(["foo", "bar"]),
+        )
