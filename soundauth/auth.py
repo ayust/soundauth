@@ -68,5 +68,5 @@ def verify_bcrypt(secret, data):
     data = data.encode("utf-8")
     try:
         return bcrypt.hashpw(secret, data) == data
-    except ValueError:
-        raise Failure("Invalid salt: {}".format(data))
+    except Exception as e:
+        raise Failure("Bcrypt error: {}".format(e))
