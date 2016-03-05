@@ -11,45 +11,53 @@ class Failure(Exception): pass
 
 
 ACCOUNT_EXPANSIONS_CACHE = {}
-MEMBER_EXPANSIONS_CACHE = {}
-PARENT_EXPANSIONS_CACHE = {}
+DESCENDANT_EXPANSIONS_CACHE = {}
+ANCESTOR_EXPANSIONS_CACHE = {}
 
 
-def clear_account_cache(groups=None):
+def clear_account_cache(items=None):
     global ACCOUNT_EXPANSIONS_CACHE
-    if groups is None:
+    if items is None:
         ACCOUNT_EXPANSIONS_CACHE.clear()
     else:
-        for group in groups:
-            ACCOUNT_EXPANSIONS_CACHE.pop(group, None)
+        for item in items:
+            ACCOUNT_EXPANSIONS_CACHE.pop(item, None)
 
 
-def clear_member_cache(groups=None):
-    global MEMBER_EXPANSIONS_CACHE
-    if groups is None:
-        MEMBER_EXPANSIONS_CACHE.clear()
+def clear_descendant_cache(items=None):
+    global DESCENDANT_EXPANSIONS_CACHE
+    if items is None:
+        DESCENDANT_EXPANSIONS_CACHE.clear()
     else:
-        for group in groups:
-            MEMBER_EXPANSIONS_CACHE.pop(group, None)
+        for item in items:
+            DESCENDANT_EXPANSIONS_CACHE.pop(item, None)
 
 
-def clear_group_caches(groups=None):
-    clear_account_cache(groups)
-    clear_member_cache(groups)
-
-
-def clear_parent_cache(children=None):
-    global PARENT_EXPANSIONS_CACHE
-    if children is None:
-        PARENT_EXPANSIONS_CACHE.clear()
+def clear_ancestor_cache(items=None):
+    global ANCESTOR_EXPANSIONS_CACHE
+    if items is None:
+        ANCESTOR_EXPANSIONS_CACHE.clear()
     else:
-        for child in children:
-            PARENT_EXPANSIONS_CACHE.pop(child, None)
+        for item in items:
+            ANCESTOR_EXPANSIONS_CACHE.pop(item, None)
+
+
+def clear_caches(parent=None, child=None):
+    if parent is None or child is None:
+        clear_account_cache()
+        clear_ancestor_cache()
+        clear_descendant_cache()
+    else:
+        upwards = list_ancestors(parent) | set([parent])
+        downwards = list_descendants(child) | set([child])
+        clear_account_cache(upwards)
+        clear_ancestor_cache(downwards)
+        clear_descendant_cache(upwards)
 
 
 def create_group(name):
     """Create a new group."""
-    if not re.match("^\w+$", name):
+    if not re.match("^[a-z-]+$", name):
         raise Failure("The group name '{}' is invalid.".format(name))
     query = groups.insert().values(
         name=name,
@@ -69,8 +77,7 @@ def drop_group(name):
         (group_members.c.parent == name) |
         (group_members.c.child == name),
     )
-    clear_group_caches(list_parents(name) | set([name]))
-    clear_parent_cache(list_children(name) | set([name]))
+    clear_caches(parent=name, child=name)
     with transaction() as t:
         t.execute(delete_group)
         t.execute(delete_members)
@@ -86,13 +93,16 @@ def group_exists(name):
     return False
 
 
-def add_subgroup(group, member):
+def add_subgroup(group, member, edgetype="or"):
     """Add a group as a member to another group."""
     if not group_exists(group):
         raise Failure("No group named '{}' exists.".format(group))
-    query = group_members.insert().values(parent=group, child=member)
-    clear_group_caches(list_parents(group) | set([member]))
-    clear_parent_cache(list_children(group) | set([member]))
+    query = group_members.insert().values(
+        parent=group,
+        child=member,
+        edgetype=edgetype,
+    )
+    clear_caches(parent=group, child=member)
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -100,14 +110,14 @@ def add_subgroup(group, member):
         pass
 
 
-def drop_subgroup(group, member):
+def drop_subgroup(group, member, edgetype="or"):
     """Remove a group from membership in another group."""
     query = group_members.delete().where(
         (group_members.c.parent == group) &
-        (group_members.c.child == member),
+        (group_members.c.child == member) &
+        (group_members.c.edgetype == edgetype),
     )
-    clear_group_caches(list_parents(group) | set([member]))
-    clear_parent_cache(list_children(group) | set([member]))
+    clear_caches(parent=group, child=member)
     query.execute()
 
 
@@ -120,29 +130,32 @@ def list_members(group):
         group_members.c.parent == group,
     )
     result = query.execute()
-    return set(row.child for row in result)
+    return set((row.edgetype, row.child) for row in result)
 
 
-def list_children(group):
-    """Recursively list all direct and indirect members of a group."""
-    members = MEMBER_EXPANSIONS_CACHE.get(group)
-    if members is not None:
-        return members
-    members = set()
+def list_descendants(group):
+    """Recursively list anything that could affect membership in this group."""
+    descendants = DESCENDANT_EXPANSIONS_CACHE.get(group)
+    if descendants is not None:
+        return descendants
+    descendants = set()
     query = group_members.select().where(
         group_members.c.parent == group,
     )
     for result in query.execute():
-        member = result.child
-        members.add(member)
-        members |= list_children(member)
-    members = frozenset(members)
-    MEMBER_EXPANSIONS_CACHE[group] = members
-    return members
+        child = result.child
+        descendants.add(child)
+        descendants |= list_descendants(child)
+    descendants = frozenset(descendants)
+    DESCENDANT_EXPANSIONS_CACHE[group] = descendants
+    return descendants
 
 
 def is_member(group, member):
-    """Check for a top-level group membership."""
+    """Check for a top-level group membership.
+
+    Note: this membership might be a negative edgetype.
+    """
     query = group_members.select().where(
         (group_members.c.parent == group) &
         (group_members.c.child == member),
@@ -156,10 +169,13 @@ def add_member_account(group, account):
     """Add an account as a member to an existing group."""
     if not group_exists(group):
         raise Failure("No group named '{}' exists.".format(group))
-    member = "account:{}".format(account)
-    query = group_members.insert().values(parent=group, child=member)
-    clear_group_caches(list_parents(group) | set([member]))
-    clear_parent_cache(list_children(group) | set([member]))
+    member = unicode(account)
+    query = group_members.insert().values(
+        parent=group,
+        child=member,
+        edgetype="account",
+    )
+    clear_caches(parent=group, child=member)
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -169,13 +185,13 @@ def add_member_account(group, account):
 
 def drop_member_account(group, account):
     """Remove an account from membership in a group."""
-    member = "account:{}".format(account)
+    member = unicode(account)
     query = group_members.delete().where(
         (group_members.c.parent == group) &
-        (group_members.c.child == member),
+        (group_members.c.child == member) &
+        (group_members.c.edgetype == "account"),
     )
-    clear_group_caches(list_parents(group) | set([member]))
-    clear_parent_cache(list_children(group) | set([member]))
+    clear_caches(parent=group, child=member)
     query.execute()
 
 
@@ -188,16 +204,25 @@ def list_accounts(group):
     if accounts is not None:
         return accounts
 
-    accounts = set()
-    for member in list_members(group):
-        prefix, _, value = member.rpartition(":")
-        if not prefix:
-            accounts |= list_accounts(value)
-        elif prefix == "account":
-            accounts.add(int(value))
+    union = set()
+    prune = set()
+    intersect = None
+    for edgetype, member in list_members(group):
+        if edgetype == "account":
+            union.add(int(member))
+        elif edgetype == "or":
+            union |= list_accounts(member)
+        elif edgetype == "and":
+            if intersect is None:
+                intersect = set(list_accounts(member))
+            else:
+                intersect &= list_accounts(member)
+        elif edgetype == "not":
+            prune |= list_accounts(member)
         else:
-            raise Failure("Unknown prefix '{}' for member.".format(prefix))
-    accounts = frozenset(accounts)
+            raise Failure("Unknown edge type '{}' for member.".format(edgetype))
+    intersect = intersect or set()
+    accounts = frozenset((union | intersect) - prune)
     ACCOUNT_EXPANSIONS_CACHE[group] = accounts
     return accounts
 
@@ -210,25 +235,27 @@ def is_member_account(group, account):
     return account in list_accounts(group)
 
 
-def list_parents(member):
+def list_ancestors(member):
     """List all of the groups that something is a member of, directly or indirectly."""
-    parents = PARENT_EXPANSIONS_CACHE.get(member)
-    if parents is not None:
-        return parents
-    parents = set()
+    ancestors = ANCESTOR_EXPANSIONS_CACHE.get(member)
+    if ancestors is not None:
+        return ancestors
+    ancestors = set()
     query = group_members.select().where(
         group_members.c.child == member,
     )
     for result in query.execute():
-        parent = result.parent
-        parents.add(parent)
-        parents |= list_parents(parent)
-    parents = frozenset(parents)
-    PARENT_EXPANSIONS_CACHE[member] = parents
-    return parents
+        ancestor = result.parent
+        ancestors.add(ancestor)
+        ancestors |= list_ancestors(ancestor)
+    ancestors = frozenset(ancestors)
+    ANCESTOR_EXPANSIONS_CACHE[member] = ancestors
+    return ancestors
 
 
 def list_account_memberships(account):
     """List all groups that an account is a member of, directly or indirectly."""
-    member = "account:{}".format(account)
-    return list_parents(member)
+    ancestors = list_ancestors(unicode(account))
+    return set(
+        a for a in ancestors
+        if account in list_accounts(a))

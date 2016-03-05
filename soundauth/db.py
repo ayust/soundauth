@@ -38,6 +38,7 @@ groups = Table("groups", METADATA_SINGLETON,
 group_members = Table("group_members", METADATA_SINGLETON,
     Column("parent", String(120), nullable=False),
     Column("child", String(120), nullable=False, index=True),
+    Column("edgetype", String(100), nullable=False),
     PrimaryKeyConstraint("parent", "child", name="edge")
 )
 
