@@ -10,20 +10,41 @@ from .db import transaction
 class Failure(Exception): pass
 
 
-GROUP_EXPANSIONS_CACHE = {}
+ACCOUNT_EXPANSIONS_CACHE = {}
 MEMBER_EXPANSIONS_CACHE = {}
+PARENT_EXPANSIONS_CACHE = {}
 
 
-def clear_group_cache():
-    # TODO: clear only the relevant cache keys
-    global GROUP_EXPANSIONS_CACHE
-    GROUP_EXPANSIONS_CACHE = {}
+def clear_account_cache(groups=None):
+    global ACCOUNT_EXPANSIONS_CACHE
+    if groups is None:
+        ACCOUNT_EXPANSIONS_CACHE.clear()
+    else:
+        for group in groups:
+            ACCOUNT_EXPANSIONS_CACHE.pop(group, None)
 
 
-def clear_member_cache():
-    # TODO: clear only the relevant cache keys
+def clear_member_cache(groups=None):
     global MEMBER_EXPANSIONS_CACHE
-    MEMBER_EXPANSIONS_CACHE = {}
+    if groups is None:
+        MEMBER_EXPANSIONS_CACHE.clear()
+    else:
+        for group in groups:
+            MEMBER_EXPANSIONS_CACHE.pop(group, None)
+
+
+def clear_group_caches(groups=None):
+    clear_account_cache(groups)
+    clear_member_cache(groups)
+
+
+def clear_parent_cache(children=None):
+    global PARENT_EXPANSIONS_CACHE
+    if children is None:
+        PARENT_EXPANSIONS_CACHE.clear()
+    else:
+        for child in children:
+            PARENT_EXPANSIONS_CACHE.pop(child, None)
 
 
 def create_group(name):
@@ -48,8 +69,8 @@ def drop_group(name):
         (group_members.c.parent == name) |
         (group_members.c.child == name),
     )
-    clear_group_cache()
-    clear_member_cache()
+    clear_group_caches(list_parents(name) | set([name]))
+    clear_parent_cache(list_children(name) | set([name]))
     with transaction() as t:
         t.execute(delete_group)
         t.execute(delete_members)
@@ -70,8 +91,8 @@ def add_subgroup(group, member):
     if not group_exists(group):
         raise Failure("No group named '{}' exists.".format(group))
     query = group_members.insert().values(parent=group, child=member)
-    clear_group_cache()
-    clear_member_cache()
+    clear_group_caches(list_parents(group) | set([member]))
+    clear_parent_cache(list_children(group) | set([member]))
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -85,8 +106,8 @@ def drop_subgroup(group, member):
         (group_members.c.parent == group) &
         (group_members.c.child == member),
     )
-    clear_group_cache()
-    clear_member_cache()
+    clear_group_caches(list_parents(group) | set([member]))
+    clear_parent_cache(list_children(group) | set([member]))
     query.execute()
 
 
@@ -100,6 +121,24 @@ def list_members(group):
     )
     result = query.execute()
     return set(row.child for row in result)
+
+
+def list_children(group):
+    """Recursively list all direct and indirect members of a group."""
+    members = MEMBER_EXPANSIONS_CACHE.get(group)
+    if members is not None:
+        return members
+    members = set()
+    query = group_members.select().where(
+        group_members.c.parent == group,
+    )
+    for result in query.execute():
+        member = result.child
+        members.add(member)
+        members |= list_children(member)
+    members = frozenset(members)
+    MEMBER_EXPANSIONS_CACHE[group] = members
+    return members
 
 
 def is_member(group, member):
@@ -119,8 +158,8 @@ def add_member_account(group, account):
         raise Failure("No group named '{}' exists.".format(group))
     member = "account:{}".format(account)
     query = group_members.insert().values(parent=group, child=member)
-    clear_group_cache()
-    clear_member_cache()
+    clear_group_caches(list_parents(group) | set([member]))
+    clear_parent_cache(list_children(group) | set([member]))
     try:
         query.execute()
     except sqlalchemy.exc.IntegrityError:
@@ -135,8 +174,8 @@ def drop_member_account(group, account):
         (group_members.c.parent == group) &
         (group_members.c.child == member),
     )
-    clear_group_cache()
-    clear_member_cache()
+    clear_group_caches(list_parents(group) | set([member]))
+    clear_parent_cache(list_children(group) | set([member]))
     query.execute()
 
 
@@ -145,7 +184,7 @@ def list_accounts(group):
 
     This function lists both direct and indirect memberships.
     """
-    accounts = GROUP_EXPANSIONS_CACHE.get(group)
+    accounts = ACCOUNT_EXPANSIONS_CACHE.get(group)
     if accounts is not None:
         return accounts
 
@@ -159,7 +198,7 @@ def list_accounts(group):
         else:
             raise Failure("Unknown prefix '{}' for member.".format(prefix))
     accounts = frozenset(accounts)
-    GROUP_EXPANSIONS_CACHE[group] = accounts
+    ACCOUNT_EXPANSIONS_CACHE[group] = accounts
     return accounts
 
 
@@ -173,7 +212,7 @@ def is_member_account(group, account):
 
 def list_parents(member):
     """List all of the groups that something is a member of, directly or indirectly."""
-    parents = MEMBER_EXPANSIONS_CACHE.get(member)
+    parents = PARENT_EXPANSIONS_CACHE.get(member)
     if parents is not None:
         return parents
     parents = set()
@@ -185,7 +224,7 @@ def list_parents(member):
         parents.add(parent)
         parents |= list_parents(parent)
     parents = frozenset(parents)
-    MEMBER_EXPANSIONS_CACHE[member] = parents
+    PARENT_EXPANSIONS_CACHE[member] = parents
     return parents
 
 
