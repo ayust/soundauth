@@ -1,5 +1,3 @@
-import sqlalchemy
-
 from .db import accounts
 from .db import authenticators
 from .db import transaction

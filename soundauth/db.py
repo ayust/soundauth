@@ -2,7 +2,6 @@ import sqlalchemy
 # Grab some specific symbols for the table definition DSL
 from sqlalchemy import Column
 from sqlalchemy import Integer
-from sqlalchemy import ForeignKey
 from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy import PrimaryKeyConstraint
@@ -40,6 +39,18 @@ group_members = Table("group_members", METADATA_SINGLETON,
     Column("child", String(120), nullable=False, index=True),
     Column("edgetype", String(100), nullable=False),
     PrimaryKeyConstraint("parent", "child", name="edge")
+)
+
+
+rules = Table("rules", METADATA_SINGLETON,
+    Column("id", Integer, primary_key=True),
+    Column("group", String(100), index=True),
+    # One of 'deny', 'grant',
+    Column("action", String(100), nullable=False),
+    # E.g. "alliance", "!corp", etc...
+    Column("condition", String(100)),
+    Column("argument", String(100)),
+    Column("order", Integer, nullable=False),
 )
 
 
