@@ -32,3 +32,24 @@ def drop_rule(rule_id):
     """Remove an existing rule."""
     query = rules.delete().where(rules.c.id == rule_id)
     query.execute()
+
+
+def evaluate_rules(group, entity):
+    """Evaluate a group's rules for an entity.
+
+    Returns one of "grant", "deny", or "ignore".
+    """
+    group_rules = rules.select().where(
+        rules.c.group == group,
+    ).order_by(
+        rules.c.order,
+    ).execute()
+    for rule in group_rules:
+        if rule.condition == "always":
+            return rule.action
+        # TODO: add more conditions
+        else:
+            raise Failure(
+                "Unknown condition '{}' for rule.".format(
+                    rule.condition))
+    return "ignore"
